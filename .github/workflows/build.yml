@@ -12,54 +12,10 @@ jobs:
       fail-fast: false
       matrix:
         branch:
-          - openwrt-19.07
-          - openwrt-21.02
-          - openwrt-22.03
-          - openwrt-23.05
           - openwrt-24.10
+          - openwrt-25.12
         arch:
           - aarch64_cortex-a53
-          - aarch64_cortex-a72
-          - aarch64_generic
-          - arm_arm1176jzf-s_vfp
-          - arm_arm926ej-s
-          - arm_cortex-a15_neon-vfpv4
-          - arm_cortex-a5_vfpv4
-          - arm_cortex-a7
-          - arm_cortex-a7_neon-vfpv4
-          - arm_cortex-a7_vfpv4
-          - arm_cortex-a8_vfpv3
-          - arm_cortex-a9
-          - arm_cortex-a9_neon
-          - arm_cortex-a9_vfpv3-d16
-          - arm_fa526
-          - arm_mpcore
-          - arm_xscale
-          - mips64_octeonplus
-          - mips_24kc
-          - mips_4kec
-          - mips_mips32
-          - mipsel_24kc
-          - mipsel_24kc_24kf
-          - mipsel_74kc
-          - mipsel_mips32
-          - x86_64
-        exclude:
-          - branch: openwrt-19.07
-            arch: arm_cortex-a7
-          - branch: openwrt-19.07
-            arch: arm_cortex-a7_vfpv4
-          - branch: openwrt-19.07
-            arch: mips_4kec
-          - branch: openwrt-21.02
-            arch: arm_cortex-a7_vfpv4
-          - branch: openwrt-24.10
-            arch: arm_mpcore
-        include:
-          - branch: openwrt-24.10
-            arch: aarch64_cortex-a76
-          # - branch: SNAPSHOT
-          #   arch: x86_64
     container:
       image: openwrt/sdk:${{ matrix.arch }}-${{ matrix.branch }}
       options: --user root
@@ -69,7 +25,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup SDK
-        if: matrix.branch == 'openwrt-23.05' || matrix.branch == 'openwrt-24.10' || matrix.branch == 'SNAPSHOT'
         working-directory: /builder
         run: HOME=/builder ./setup.sh
 
@@ -85,7 +40,7 @@ jobs:
 
       - name: Build package
         id: build
-        working-directory: ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt' || '/builder' }}
+        working-directory: /builder
         env:
           ARCH: ${{ matrix.arch }}
           BRANCH: ${{ matrix.branch }}
@@ -105,7 +60,7 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           BRANCH: ${{ matrix.branch }}
-          LOGS_DIR: ${{ matrix.branch == 'openwrt-19.07' && '/home/build/openwrt/logs' || '/builder/logs' }}
+          LOGS_DIR: /builder/logs
         run: |
           tar -cJvf logs-$BRANCH-$ARCH.tar.xz $LOGS_DIR
 
@@ -162,11 +117,8 @@ jobs:
       max-parallel: 1
       matrix:
         branch:
-          - '19.07'
-          - '21.02'
-          - '22.03'
-          - '23.05'
           - '24.10'
+          - '25.12'
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v4
@@ -177,7 +129,7 @@ jobs:
         env:
           BRANCH: ${{ matrix.branch }}
         run: |
-          find . -name "ipk-openwrt-$BRANCH-*.tar" -exec tar -xvf {} --wildcards '*.ipk' \;
+          find . -name "ipk-openwrt-$BRANCH-*.tar" -exec tar -xvf {} --wildcards '*.ipk' '*.apk' \;
 
       - name: Upload release assets
         uses: softprops/action-gh-release@v2
@@ -194,4 +146,6 @@ jobs:
             ```
             # awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
             ```
-          files: ./**/*.ipk
+          files: |
+            ./**/*.ipk
+            ./**/*.apk
