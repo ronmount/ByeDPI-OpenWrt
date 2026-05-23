@@ -63,6 +63,7 @@ jobs:
           fi
 
           export PATH="/builder/staging_dir/host/bin:$PATH"
+          export MKHASH="/builder/staging_dir/host/bin/mkhash"
 
           if compgen -G "$PACKAGE_DIR/*.ipk" > /dev/null; then
             (
