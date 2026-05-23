@@ -3,6 +3,10 @@ name: build
 on:
   workflow_dispatch:
 
+env:
+  PACKAGE_NAME: byedpi
+  CACHE_DIR: ~/cache
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -11,22 +15,82 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        branch:
-          - openwrt-24.10
-          - openwrt-25.12
-        arch:
-          - aarch64_cortex-a53
-    container:
-      image: openwrt/sdk:${{ matrix.arch }}-${{ matrix.branch }}
-      options: --user root
+        include:
+          - id: 24.10
+            branch: openwrt-24.10
+            arch: aarch64_cortex-a53
+            sdk_url_path: https://downloads.openwrt.org/releases/24.10.6/targets/bcm27xx/bcm2710
+            sdk_name: -sdk-24.10.6-bcm27xx-bcm2710_
+          - id: 25.12
+            branch: openwrt-25.12
+            arch: aarch64_cortex-a53
+            sdk_url_path: https://downloads.openwrt.org/releases/25.12.4/targets/bcm27xx/bcm2710
+            sdk_name: -sdk-25.12.4-bcm27xx-bcm2710_
+    env:
+      SDK_URL_PATH: ${{ matrix.sdk_url_path }}
+      SDK_NAME: ${{ matrix.sdk_name }}
+      CCACHE_DIR: ~/.ccache
+      CONFIG_CCACHE: y
     defaults: { run: { shell: bash } }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Setup SDK
-        working-directory: /builder
-        run: HOME=/builder ./setup.sh
+      - name: Prepare cache key
+        id: cache_key
+        run: echo "timestamp=$(date +%s)" >> "$GITHUB_OUTPUT"
+
+      - name: Setup cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.CACHE_DIR }}
+            ${{ env.CCACHE_DIR }}
+          key: openwrt-${{ matrix.arch }}-${{ matrix.id }}-${{ env.PACKAGE_NAME }}-${{ steps.cache_key.outputs.timestamp }}
+          restore-keys: |
+            openwrt-${{ matrix.arch }}-${{ matrix.id }}-${{ env.PACKAGE_NAME }}-
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          DEBIAN_FRONTEND=noninteractive sudo apt-get install -y ccache gettext libncurses5-dev xsltproc zstd
+
+      - name: Create directories
+        run: |
+          CACHE_DIR_SDK="$(eval echo "$CACHE_DIR/sdk")"
+          CACHE_DIR_DL="$(eval echo "$CACHE_DIR/dl")"
+          CACHE_DIR_FEEDS="$(eval echo "$CACHE_DIR/feeds")"
+          mkdir -p "$CACHE_DIR_SDK" "$CACHE_DIR_DL" "$CACHE_DIR_FEEDS"
+          echo "CACHE_DIR_SDK=$CACHE_DIR_SDK" >> "$GITHUB_ENV"
+          echo "CACHE_DIR_DL=$CACHE_DIR_DL" >> "$GITHUB_ENV"
+          echo "CACHE_DIR_FEEDS=$CACHE_DIR_FEEDS" >> "$GITHUB_ENV"
+          echo "SDK_HOME=$(mktemp -d)" >> "$GITHUB_ENV"
+
+      - name: Download and unpack SDK
+        run: |
+          cd "$CACHE_DIR_SDK"
+          if ! ( wget -q -O - "$SDK_URL_PATH/sha256sums" | grep -- "$SDK_NAME" > sha256sums.small 2>/dev/null ) ; then
+            echo "::error::Can not find ${SDK_NAME} file in sha256sums."
+            exit 1
+          fi
+          SDK_FILE="$(cut -d' ' -f2 sha256sums.small | sed 's/*//g')"
+          if ! sha256sum -c ./sha256sums.small >/dev/null 2>&1 ; then
+            wget -q -O "$SDK_FILE" "$SDK_URL_PATH/$SDK_FILE"
+            if ! sha256sum -c ./sha256sums.small >/dev/null 2>&1 ; then
+              echo "::error::SDK can not be verified!"
+              exit 1
+            fi
+          fi
+          tar -C "$SDK_HOME" --strip=1 -xf "$CACHE_DIR_SDK/$SDK_FILE"
+          cd "$SDK_HOME"
+          rm -rf dl feeds
+          ln -s "$CACHE_DIR_DL" dl
+          ln -s "$CACHE_DIR_FEEDS" feeds
+          cp feeds.conf.default feeds.conf
+          sed -i 's#git.openwrt.org/openwrt/openwrt#github.com/openwrt/openwrt#' feeds.conf
+          sed -i 's#git.openwrt.org/feed/packages#github.com/openwrt/packages#' feeds.conf
+          sed -i 's#git.openwrt.org/project/luci#github.com/openwrt/luci#' feeds.conf
+          sed -i 's#git.openwrt.org/feed/telephony#github.com/openwrt/telephony#' feeds.conf
 
       - name: Prepare build
         id: prepare
@@ -40,12 +104,12 @@ jobs:
 
       - name: Build package
         id: build
-        working-directory: /builder
         env:
           ARCH: ${{ matrix.arch }}
           BRANCH: ${{ matrix.branch }}
           SIGN_KEY: ${{ secrets.SIGN_PRIVATE_KEY }}
         run: |
+          cd "$SDK_HOME"
           echo "src-link byedpi $GITHUB_WORKSPACE" >> feeds.conf
           ./scripts/feeds update byedpi
           ./scripts/feeds install -a -p byedpi
@@ -56,21 +120,21 @@ jobs:
             echo "$SIGN_KEY" | base64 -d > key-build
           fi
 
-          PACKAGE_DIR="$(find ./bin/packages -mindepth 2 -maxdepth 2 -type d -name byedpi -print -quit)"
+          PACKAGE_DIR="$(find "$SDK_HOME/bin/packages" -mindepth 2 -maxdepth 2 -type d -name byedpi -print -quit)"
           if [ -z "$PACKAGE_DIR" ]; then
             echo "::error::Package directory not found"
             exit 1
           fi
 
-          export PATH="/builder/staging_dir/host/bin:$PATH"
-          export MKHASH="/builder/staging_dir/host/bin/mkhash"
+          export PATH="$SDK_HOME/staging_dir/host/bin:$PATH"
+          export MKHASH="$SDK_HOME/staging_dir/host/bin/mkhash"
 
           if compgen -G "$PACKAGE_DIR/*.ipk" > /dev/null; then
             (
               cd "$PACKAGE_DIR"
-              /builder/scripts/ipkg-make-index.sh . > Packages.manifest
+              "$SDK_HOME/scripts/ipkg-make-index.sh" . > Packages.manifest
               grep -vE '^(Maintainer|LicenseFiles|Source|SourceName|Require|SourceDateEpoch)' Packages.manifest > Packages
-              /builder/scripts/make-index-json.py -f opkg -a "$ARCH" Packages > index.json
+              "$SDK_HOME/scripts/make-index-json.py" -f opkg -a "$ARCH" Packages > index.json
               gzip -9nc Packages > Packages.gz
             )
             if [ -s key-build ]; then
@@ -81,15 +145,15 @@ jobs:
           if compgen -G "$PACKAGE_DIR/*.apk" > /dev/null; then
             (
               cd "$PACKAGE_DIR"
-              /builder/staging_dir/host/bin/apk mkndx \
-                --root /builder \
-                --keys-dir /builder \
+              "$SDK_HOME/staging_dir/host/bin/apk" mkndx \
+                --root "$SDK_HOME" \
+                --keys-dir "$SDK_HOME" \
                 --allow-untrusted \
                 --output packages.adb \
                 *.apk
             )
-            /builder/staging_dir/host/bin/apk adbdump --format json "$PACKAGE_DIR/packages.adb" | \
-              ./scripts/make-index-json.py -f apk -a "$ARCH" - > "$PACKAGE_DIR/index.json"
+            "$SDK_HOME/staging_dir/host/bin/apk" adbdump --format json "$PACKAGE_DIR/packages.adb" | \
+              "$SDK_HOME/scripts/make-index-json.py" -f apk -a "$ARCH" - > "$PACKAGE_DIR/index.json"
           fi
 
           tar -C "$PACKAGE_DIR" -cvf "$GITHUB_WORKSPACE/ipk-$BRANCH-$ARCH.tar" --transform "s|^\./|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
@@ -99,9 +163,13 @@ jobs:
         env:
           ARCH: ${{ matrix.arch }}
           BRANCH: ${{ matrix.branch }}
-          LOGS_DIR: /builder/logs
         run: |
-          tar -cJvf logs-$BRANCH-$ARCH.tar.xz $LOGS_DIR
+          if [ -d "$SDK_HOME/logs" ]; then
+            tar -cJvf logs-$BRANCH-$ARCH.tar.xz "$SDK_HOME/logs"
+          else
+            mkdir empty-logs
+            tar -cJvf logs-$BRANCH-$ARCH.tar.xz empty-logs
+          fi
 
       - name: Upload packages
         if: steps.build.outcome == 'success'
