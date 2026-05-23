@@ -238,7 +238,8 @@ jobs:
         run: |
           find . -name "ipk-openwrt-$BRANCH-*.tar" -exec tar -xvf {} --wildcards '*.ipk' '*.apk' \;
 
-      - name: Upload release assets
+      - name: Upload OpenWrt 24.10 release assets
+        if: matrix.branch == '24.10'
         uses: softprops/action-gh-release@v2
         with:
           fail_on_unmatched_files: true
@@ -253,6 +254,22 @@ jobs:
             ```
             # awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
             ```
-          files: |
-            ./**/*.ipk
-            ./**/*.apk
+          files: ./**/*.ipk
+
+      - name: Upload OpenWrt 25.12 release assets
+        if: matrix.branch == '25.12'
+        uses: softprops/action-gh-release@v2
+        with:
+          fail_on_unmatched_files: true
+          tag_name: ${{ needs.build.outputs.tag }}-${{ matrix.branch }}
+          name: ${{ needs.build.outputs.tag }} for OpenWrt ${{ matrix.branch }}
+          target_commitish: gh-pages
+          body: |
+            ### ByeDPI ${{ needs.build.outputs.tag }} for OpenWrt ${{ matrix.branch }}
+
+            -----
+            Check the package architecture of your device using the command:
+            ```
+            # awk -F\' '/DISTRIB_ARCH/ {print $2}' /etc/openwrt_release
+            ```
+          files: ./**/*.apk
