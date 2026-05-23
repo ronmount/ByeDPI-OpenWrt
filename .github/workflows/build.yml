@@ -51,9 +51,42 @@ jobs:
           ./scripts/feeds install -a -p byedpi
           make defconfig
           make package/byedpi/compile V=s -j$(nproc) BUILD_LOG=1
-          echo "$SIGN_KEY" | base64 -d > key-build
-          make package/index
-          tar -C ./bin/packages/*/byedpi -cvf $GITHUB_WORKSPACE/ipk-$BRANCH-$ARCH.tar --transform "s|^\./|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
+
+          if [ -n "$SIGN_KEY" ]; then
+            echo "$SIGN_KEY" | base64 -d > key-build
+          fi
+
+          PACKAGE_DIR="$(find ./bin/packages -mindepth 2 -maxdepth 2 -type d -name byedpi -print -quit)"
+          if [ -z "$PACKAGE_DIR" ]; then
+            echo "::error::Package directory not found"
+            exit 1
+          fi
+
+          if compgen -G "$PACKAGE_DIR/*.ipk" > /dev/null; then
+            ./scripts/ipkg-make-index.sh "$PACKAGE_DIR" > "$PACKAGE_DIR/Packages.manifest"
+            grep -vE '^(Maintainer|LicenseFiles|Source|SourceName|Require|SourceDateEpoch)' "$PACKAGE_DIR/Packages.manifest" > "$PACKAGE_DIR/Packages"
+            ./scripts/make-index-json.py -f opkg -a "$ARCH" "$PACKAGE_DIR/Packages" > "$PACKAGE_DIR/index.json"
+            gzip -9nc "$PACKAGE_DIR/Packages" > "$PACKAGE_DIR/Packages.gz"
+            if [ -s key-build ]; then
+              ./staging_dir/host/bin/usign -S -m "$PACKAGE_DIR/Packages" -s key-build
+            fi
+          fi
+
+          if compgen -G "$PACKAGE_DIR/*.apk" > /dev/null; then
+            (
+              cd "$PACKAGE_DIR"
+              /builder/staging_dir/host/bin/apk mkndx \
+                --root /builder \
+                --keys-dir /builder \
+                --allow-untrusted \
+                --output packages.adb \
+                *.apk
+            )
+            /builder/staging_dir/host/bin/apk adbdump --format json "$PACKAGE_DIR/packages.adb" | \
+              ./scripts/make-index-json.py -f apk -a "$ARCH" - > "$PACKAGE_DIR/index.json"
+          fi
+
+          tar -C "$PACKAGE_DIR" -cvf "$GITHUB_WORKSPACE/ipk-$BRANCH-$ARCH.tar" --transform "s|^\./|${BRANCH/openwrt-}/$ARCH/|" --show-transformed-names .
 
       - name: Compress build logs
         if: always()
